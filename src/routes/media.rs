@@ -6,6 +6,7 @@ use actix_files::NamedFile;
 use actix_web::{get, web, HttpRequest, HttpResponse, Responder};
 use html_escape::encode_safe;
 use std::sync::Arc;
+use crate::config::Configuration;
 
 #[get("/info_id/{id}")]
 pub async fn get_info_id(
@@ -104,19 +105,21 @@ pub async fn download_playlist_handler(
     query: web::Query<PlaylistParams>,
     yt_service: web::Data<YoutubeService>,
     tasks: SharedTasks,
+    config: web::Data<Configuration>,
 ) -> impl Responder {
     let task_id = uuid::Uuid::new_v4().to_string();
     let url = query.url.clone();
 
-    let yt_service_owned = yt_service.get_ref().clone();
+    let yt_service_owned = yt_service.clone();
     let tasks_arc = tasks.get_ref().clone();
+    let config = config.get_ref().clone();
     let tid = task_id.clone();
 
     tasks_arc.insert(task_id.clone(), "Inicjowanie...".to_string());
 
     tokio::spawn(async move {
         match yt_service_owned
-            .download_playlist_with_progress(&url, tid.clone(), tasks_arc.clone())
+            .download_playlist_with_progress(&url, tid.clone(), tasks_arc.clone(), config)
             .await
         {
             Ok(playlist_dir) => {
@@ -138,6 +141,7 @@ pub async fn download_playlist_handler(
                 }
             }
             Err(e) => {
+                eprintln!("DOWNLOAD ERROR: {:?}", e);
                 tasks_arc.insert(tid, format!("error: {}", e));
             }
         }
@@ -185,7 +189,7 @@ pub async fn get_zip_handler(
     HttpResponse::BadRequest().body("Zadanie nie jest jeszcze gotowe lub nie istnieje")
 }
 
-#[get("/download_playlist")]
+/*#[get("/download_playlist")]
 pub async fn start_playlist_handler(
     query: web::Query<PlaylistParams>,
     data: web::Data<Arc<AppState>>,
@@ -232,7 +236,7 @@ pub async fn start_playlist_handler(
     });
 
     HttpResponse::Ok().json(serde_json::json!({ "task_id": task_id }))
-}
+}*/
 
 #[get("/status/{task_id}")]
 pub async fn check_status_handler(

@@ -40,6 +40,7 @@ async fn main() -> io::Result<()> {
 
     let yt_service = web::Data::new(YoutubeService::new(ytdlp_path, temp_path.clone()));
 
+
     println!("Server running on: http://localhost:{}", port);
 
     if let Err(e) = open::that(format!("http://localhost:{}", port)) {
@@ -50,6 +51,7 @@ async fn main() -> io::Result<()> {
         App::new()
             .app_data(web::Data::new(tasks.clone()))
             .app_data(yt_service.clone())
+            .app_data(web::Data::new(config.clone()))
             .wrap(Cors::permissive())
             .service(routes::media::get_info_id)
             .service(routes::media::html_get_info_id)
@@ -64,6 +66,7 @@ async fn main() -> io::Result<()> {
                     .use_last_modified(true),
             )
     })
+    .bind(("127.0.0.1", port))?
     .bind(("0.0.0.0", port))?
     .run()
     .await

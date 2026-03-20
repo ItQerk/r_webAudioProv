@@ -12,6 +12,7 @@ use dashmap::DashMap;
 use std::fs::File;
 use walkdir::WalkDir;
 use zip::write::SimpleFileOptions;
+use crate::config::Configuration;
 
 #[derive(Clone)]
 pub struct YoutubeService {
@@ -150,98 +151,6 @@ impl YoutubeService {
         Ok(target_path)
     }
 
-    pub async fn download_full_playlist(&self, url: &str, format: &str) -> Result<PathBuf> {
-        let playlist_id = "playlist_tmp";
-        let playlist_dir = self.temp_dir.join(playlist_id);
-        if !playlist_dir.exists() {
-            fs::create_dir_all(&playlist_dir)?;
-        }
-
-        let mut dl = YoutubeDl::new(url);
-        dl.youtube_dl_path(&self.ytdlp_path)
-            .extra_arg("--yes-playlist");
-
-        if format == "mp3" {
-            dl.extract_audio(true)
-                .format("bestaudio")
-                .output_template(format!(
-                    "{}/%(playlist_index)s_%(title)s.%(ext)s",
-                    playlist_id
-                ));
-        } else {
-            dl.format("bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]")
-                .output_template(format!(
-                    "{}/%(playlist_index)s_%(title)s.%(ext)s",
-                    playlist_id
-                ));
-        }
-
-        dl.download_to_async("./temp")
-            .await
-            .context("Błąd podczas pobierania playlisty przez yt-dlp")?;
-
-        Ok(playlist_dir)
-    }
-
-    pub async fn download_playlist_scalable(&self, url: &str, format: &str) -> Result<PathBuf> {
-        let output = YoutubeDl::new(url)
-            .youtube_dl_path(&self.ytdlp_path)
-            .flat_playlist(true)
-            .run_async()
-            .await?;
-
-        let entries = match output {
-            YoutubeDlOutput::Playlist(p) => p.entries.unwrap_or_default(),
-            _ => return Err(anyhow!("To nie jest playlista")),
-        };
-
-        let total_count = entries.len();
-        println!(
-            "Rozpoczynam pobieranie playlisty: {} elementów",
-            total_count
-        );
-        let progress = Arc::new(AtomicUsize::new(0));
-        let format = format.to_string();
-
-        let results = futures::stream::iter(entries)
-            .map(|entry| {
-                let format_clone = format.to_string();
-                let yt_service = self.clone();
-                let id = entry.id.clone();
-
-                let progress_clone = Arc::clone(&progress);
-
-                async move {
-                    let current = progress_clone.fetch_add(1, Ordering::SeqCst) + 1;
-                    println!(
-                        "[{}/{}] Rozpoczynam pobieranie: {}",
-                        current, total_count, id
-                    );
-
-                    let video_url = format!("https://www.youtube.com/watch?v={}", id);
-
-                    if format_clone == "mp3" {
-                        yt_service.download_audio(&video_url).await?;
-                    } else {
-                        yt_service.download_video(&video_url).await?;
-                    }
-
-                    println!("[{}/{}] ZAKOŃCZONO: {}", current, total_count, id);
-                    Ok::<(), anyhow::Error>(())
-                }
-            })
-            .buffer_unordered(3)
-            .collect::<Vec<_>>()
-            .await;
-        let success_count = results.iter().filter(|r| r.is_ok()).count();
-        println!(
-            "Zakończono: {}/{} pobranych pomyślnie",
-            success_count, total_count
-        );
-
-        Ok(self.temp_dir.join("playlist_tmp"))
-    }
-
     pub async fn download_full_playlist_fast(&self, url: &str) -> Result<PathBuf> {
         let output = YoutubeDl::new(url)
             .youtube_dl_path(&self.ytdlp_path)
@@ -299,6 +208,7 @@ impl YoutubeService {
         url: &str,
         task_id: String,
         tasks: Arc<DashMap<String, String>>,
+        config: Configuration
     ) -> Result<PathBuf> {
         tasks.insert(task_id.clone(), "Pobieranie listy filmów...".to_string());
 
@@ -340,14 +250,14 @@ impl YoutubeService {
 
                     let mut dl = YoutubeDl::new(&video_url);
                     dl.youtube_dl_path(&yt.ytdlp_path)
+                        .extra_arg("-f").extra_arg("bestaudio")
                         .extra_arg("--extract-audio")
-                        .extra_arg("--ignore-error")
-                        .extra_arg("--audio-format")
-                        .extra_arg("mp3")
-                        .extra_arg("--socket-timeout")
-                        .extra_arg("30")
-                        .extra_arg("--audio-quality")
-                        .extra_arg("192K")
+                        .extra_arg("--audio-format").extra_arg("mp3")
+                        .extra_arg("--audio-quality").extra_arg("0")
+                        .extra_arg("--ignore-errors")
+                        .extra_arg("--socket-timeout").extra_arg("30")
+                        .extra_arg("--concurrent-fragments").extra_arg("4")
+                        .extra_arg("--no-check-certificate")
                         .output_template(format!("{}/%(title)s.%(ext)s", folder))
                         .download_to_async(&yt.temp_dir)
                         .await?;
@@ -355,7 +265,7 @@ impl YoutubeService {
                     Ok::<(), anyhow::Error>(())
                 }
             })
-            .buffer_unordered(3)
+            .buffer_unordered(config.max_concurrent_tasks)
             .collect::<Vec<_>>()
             .await;
 
